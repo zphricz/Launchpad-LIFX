@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-# coding=utf-8
+
 import sys
-from time import sleep
 import queue
-import time
 import os
-import RPi.GPIO as GPIO
 import colorsys
 
 from lifxlan import LifxLAN
 import launchpad_py as launchpad
 from pygame import time
 
-WARM_COLOR = [0, 0, 65535, 3500]
+WARM_TEMP = 3500
+WARM_COLOR = [0, 0, 65535, WARM_TEMP]
 NUM_LIGHTS = 3
+RATE = 0.1
+MS_PER_LOOP = 100
+ERROR_FLASH_DURATION_MS = 3000
+ERROR_FLASH_FREQUENCY = 6.0
+BUTTON_GLOW = 1
+BUTTON_RGB = tuple(BUTTON_GLOW for _ in range(3))
 
 lifx = LifxLAN(NUM_LIGHTS)
 lights = lifx.get_lights()
@@ -23,7 +27,7 @@ while len(lights) != 3:
     if i == 10:
         sys.exit(1)
     print("Attempting to open lifx again: i")
-    sleep(10)
+    time.wait(10000)
     lifx = LifxLAN(NUM_LIGHTS)
     lights = lifx.get_lights()
 
@@ -35,7 +39,6 @@ else:
     sys.exit(1)
 lp.ButtonFlush()
 
-
 original_colors = lifx.get_color_all_lights()
 original_powers = lifx.get_power_all_lights()
 
@@ -43,6 +46,16 @@ are_lights_all_on = True
 for light, power in lifx.get_power_all_lights().items():
     if power == 0:
         are_lights_all_on = False
+
+def set_button_glow(v):
+    lp.LedCtrlXY(0, 0, v, v, v)
+    lp.LedCtrlXY(4, 0, v, v, v)
+    lp.LedCtrlXY(5, 0, v, v, v)
+    lp.LedCtrlXY(8, 1, v, v, v)
+    lp.LedCtrlXY(8, 2, v, v, v)
+    lp.LedCtrlXY(8, 3, v, v, v)
+    lp.LedCtrlXY(8, 4, v, v, v)
+
 
 def shutdown(channel):
     print("Shutting down")
@@ -53,43 +66,42 @@ def toggle_lights():
 
     if are_lights_all_on:
         lifx.set_power_all_lights("off", rapid=True)
+        set_button_glow(1)
     else:
         lifx.set_power_all_lights("on", rapid=True)
-        #lifx.set_color_all_lights(WARM_COLOR, duration=1000, rapid=True)
+        set_button_glow(63)
     are_lights_all_on = not are_lights_all_on
 
-class RGB(object):
-    def __init__(self, r, g, b):
-        self.r = r
-        self.g = g
-        self.b = b
+def increment_val(val):
+    return min(val + RATE, 1.0)
 
-    def to_tuple(self):
-        return self.r, self.g, self.b
+def decrement_val(val):
+    return max(val - RATE, 0.0)
 
-#hues = [[None] * 10] * 10
-#rgbs = [[None] * 10] * 10
-hues = {}
+
+def map_to_base(val, base):
+    new_val = int(val * base)
+    if new_val == base:
+        return new_val - 1
+    return new_val
+
+hsvs = {}
 rgbs = {}
 
-hue = 0
-for x in range(8):
-    for y in range(1, 9):
-        r, g, b = colorsys.hsv_to_rgb(hue / 65535, 1.0, 1.0)
-        rgb = RGB(int(64 * r), int(64 * g), int(64 * b))
-        rgbs[(x, y)] = rgb
-        hues[(x, y)] = int(hue)
-        hue += 65535 / 64
+def build_rgbs_and_hsvs(saturation=1.0, brightness=1.0):
+    hue = 0.0
+    for x in range(8):
+        for y in range(1, 9):
+            r, g, b = colorsys.hsv_to_rgb(hue, saturation, brightness)
+            rgbs[(x, y)] = (map_to_base(r, 64), map_to_base(g, 64), map_to_base(b, 64))
+            hsvs[(x, y)] = (map_to_base(hue, 65536), map_to_base(saturation, 65536), map_to_base(brightness, 65536))
+            hue += 1.0 / 64.0
 
 def neighbors(x, y):
-    #yield (x - 1, y - 1)
     yield (x - 1, y)
-    #yield (x - 1, y + 1)
     yield (x, y - 1)
     yield (x, y + 1)
-    #yield (x + 1, y - 1)
     yield (x + 1, y)
-    #yield (x + 1, y + 1)
 
 def in_bounds(x, y):
     return 0 <= x <= 7 and 1 <= y <= 8
@@ -115,60 +127,122 @@ def set_launchpad_wave(mode, wait_ms=15):
             time.wait(wait_ms)
         last_depth = depth
         if mode == "rgb":
-            r, g, b = rgbs[(x, y)].to_tuple()
+            r, g, b = rgbs[(x, y)]
             lp.LedCtrlXY(x, y, r, g, b)
         elif mode == "off":
             lp.LedCtrlXY(x, y, 0, 0, 0)
         else:
             raise Exception("Unknown mode: {}".format(mode))
-    #for x in range(8):
-    #    for y in range(1, 9):
-    #        r, g, b = rgbs[(x, y)].to_tuple()
-    #        lp.LedCtrlXY(x, y, r, g, b)
+
+saturation = 1.0
+brightness = 1.0
 
 lp.Reset()
-#lp.LedCtrlXY(0, 1, r, g, b)
+build_rgbs_and_hsvs(saturation=saturation, brightness=brightness)
 set_launchpad_wave(mode="rgb")
-is_rgb = True
+are_launchpad_lights_on = True
+last_color_xy = None
+last_hold_down_button_pressed = None
+lifx_is_rgb = False
 
+if are_lights_all_on:
+    set_button_glow(63)
+else:
+    set_button_glow(1)
+
+next_ticks = time.get_ticks()
 try:
     while True:
-        while True:
-            buttons_hit = lp.ButtonStateXY()
-            if not buttons_hit:
-                # send some data to prevent buffering issues
-                if is_rgb:
-                    r, g, b = rgbs[(0, 1)].to_tuple()
-                    lp.LedCtrlXY(0, 1, r, g, b)
-                else:
-                    lp.LedCtrlXY(0, 1, 0, 0, 0)
-                break
-            x, y, value = buttons_hit
-            if value:
-                if (x, y) == (4, 0):
-                    #shutdown()
-                    print("toggle")
-                    toggle_lights()
-                    continue
-                elif (x, y) == (5, 0):
-                    print("warm")
-                    lifx.set_color_all_lights(WARM_COLOR, duration=0, rapid=True)
-                elif (x, y) == (0, 0):
-                    if is_rgb:
-                        set_launchpad_wave(mode="off")
-                        #lp.Reset()
-                        is_rgb = False
+        try:
+            next_ticks += MS_PER_LOOP
+            while True:
+                buttons_hit = lp.ButtonStateXY()
+                if not buttons_hit:
+                    # always send some data to prevent buffering issues
+                    if are_launchpad_lights_on:
+                        r, g, b = rgbs[(0, 1)]
+                        lp.LedCtrlXY(0, 1, r, g, b)
                     else:
-                        set_launchpad_wave(mode="rgb")
-                        is_rgb = True
-                if not (x, y) in hues:
-                    continue
-                hue = hues[(x, y)]
-                #hue = hues[x][y]
-                print(hue)
-                lifx.set_color_all_lights([hue, 65535, 65535, 0], duration=0, rapid=True)
-        time.wait(100)
+                        lp.LedCtrlXY(0, 1, 0, 0, 0)
+                    break
+                x, y, value = buttons_hit
+                if value == 0:
+                    if (x, y) == last_hold_down_button_pressed:
+                        last_hold_down_button_pressed = None
+                elif value:
+                    if (x, y) == (4, 0):
+                        print("toggle lights")
+                        toggle_lights()
+                        continue
+                    elif (x, y) == (5, 0):
+                        print("set lights warm")
+                        lifx.set_color_all_lights(WARM_COLOR, duration=0, rapid=True)
+                        lifx_is_rgb = False
+                    elif (x, y) in {(8, 1), (8, 2), (8, 3), (8, 4)}:
+                        last_hold_down_button_pressed = (x, y)
+                    elif (x, y) == (0, 0):
+                        if are_launchpad_lights_on:
+                            print("launchpad lights off")
+                            set_launchpad_wave(mode="off")
+                            are_launchpad_lights_on = False
+                        else:
+                            print("launchpad lights on")
+                            set_launchpad_wave(mode="rgb")
+                            are_launchpad_lights_on = True
+                    if not (x, y) in hsvs:
+                        continue
+                    h, s, v = hsvs[(x, y)]
+                    r, g, b = rgbs[(x, y)]
+                    print("(h, s, v) = ({}, {}, {})".format(h, s, b))
+                    print("(r, g, b) = ({}, {}, {})".format(r, g, b))
+                    lifx.set_color_all_lights([h, s, v, WARM_TEMP], duration=0, rapid=True)
+                    last_color_xy = (x, y)
+                    lifx_is_rgb = True
+            if last_hold_down_button_pressed is not None:
+                if last_hold_down_button_pressed == (8, 1):
+                    saturation = increment_val(saturation)
+                    print("increment saturation")
+                elif last_hold_down_button_pressed == (8, 2):
+                    saturation = decrement_val(saturation)
+                    print("decrement saturation")
+                elif last_hold_down_button_pressed == (8, 3):
+                    brightness = increment_val(brightness)
+                    print("increment brightness")
+                elif last_hold_down_button_pressed == (8, 4):
+                    brightness = decrement_val(brightness)
+                    print("decrement brightness")
+                build_rgbs_and_hsvs(saturation=saturation, brightness=brightness)
+                if are_launchpad_lights_on:
+                    set_launchpad_wave(mode="rgb", wait_ms=0)
+                if last_color_xy is not None and lifx_is_rgb:
+                    h, s, v = hsvs[last_color_xy]
+                    r, g, b = rgbs[last_color_xy]
+                    print("(h, s, v) = ({}, {}, {})".format(h, s, b))
+                    print("(r, g, b) = ({}, {}, {})".format(r, g, b))
+                    lifx.set_color_all_lights([h, s, v, WARM_TEMP], duration=100, rapid=True)
+            ticks = time.get_ticks()
+            time.wait(next_ticks - ticks)
+        except OSError:
+            # This might happen in case of a network disconnect
+            err_end_ticks = time.get_ticks() + ERROR_FLASH_DURATION_MS
+            hold_duration_ms = ERROR_FLASH_DURATION_MS / ERROR_FLASH_FREQUENCY / 2
+            err_next_ticks = time.get_ticks() + hold_duration_ms
+            code = lp.LedGetColorByName("red")
+            lp.LedAllOn(code)
+            on = True
+            while not time.get_ticks() >= err_end_ticks:
+                if time.get_ticks() >= err_next_ticks:
+                    if on:
+                        lp.LedAllOn(0)
+                    else:
+                        lp.LedAllOn(code)
+                    on = not on
+                    err_next_ticks += hold_duration_ms
+                time.wait(10)
+            set_launchpad_wave(mode="rgb")
 except KeyboardInterrupt:
+    pass
+finally:
     lp.Reset()
     lp.Close()
 
