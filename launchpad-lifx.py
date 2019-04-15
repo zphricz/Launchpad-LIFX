@@ -7,14 +7,14 @@ import colorsys
 
 from lifxlan import LifxLAN
 import launchpad_py as launchpad
-from pygame import time
+import time
 
 WARM_TEMP = 3500
 WARM_COLOR = [0, 0, 65535, WARM_TEMP]
 NUM_LIGHTS = 3
 RATE = 0.1
-MS_PER_LOOP = 100
-ERROR_FLASH_DURATION_MS = 3000
+LOOP_DURATION_SECONDS = 0.1
+ERROR_FLASH_DURATION_SECONDS = 3
 ERROR_FLASH_FREQUENCY = 6.0
 BUTTON_GLOW = 1
 BUTTON_RGB = tuple(BUTTON_GLOW for _ in range(3))
@@ -26,8 +26,8 @@ while len(lights) != 3:
     i += 1
     if i == 10:
         sys.exit(1)
-    print("Attempting to open lifx again: i")
-    time.wait(10000)
+    print("Attempting to open lifx again: {}".format(i))
+    time.sleep(10)
     lifx = LifxLAN(NUM_LIGHTS)
     lights = lifx.get_lights()
 
@@ -124,7 +124,7 @@ def set_launchpad_wave(mode, wait_ms=15):
             seen.add(child)
             q.put((child, depth + 1))
         if depth != last_depth:
-            time.wait(wait_ms)
+            time.sleep(wait_ms / 1000)
         last_depth = depth
         if mode == "rgb":
             r, g, b = rgbs[(x, y)]
@@ -150,11 +150,11 @@ if are_lights_all_on:
 else:
     set_button_glow(1)
 
-next_ticks = time.get_ticks()
+next_trigger_time = time.time()
 try:
     while True:
         try:
-            next_ticks += MS_PER_LOOP
+            next_trigger_time += LOOP_DURATION_SECONDS
             while True:
                 buttons_hit = lp.ButtonStateXY()
                 if not buttons_hit:
@@ -220,25 +220,27 @@ try:
                     print("(h, s, v) = ({}, {}, {})".format(h, s, b))
                     print("(r, g, b) = ({}, {}, {})".format(r, g, b))
                     lifx.set_color_all_lights([h, s, v, WARM_TEMP], duration=100, rapid=True)
-            ticks = time.get_ticks()
-            time.wait(next_ticks - ticks)
+            current_time = time.time()
+            sleep_duration = next_trigger_time - current_time
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
         except OSError:
             # This might happen in case of a network disconnect
-            err_end_ticks = time.get_ticks() + ERROR_FLASH_DURATION_MS
-            hold_duration_ms = ERROR_FLASH_DURATION_MS / ERROR_FLASH_FREQUENCY / 2
-            err_next_ticks = time.get_ticks() + hold_duration_ms
+            err_end_time = time.time() + ERROR_FLASH_DURATION_SECONDS
+            hold_duration_seconds = ERROR_FLASH_DURATION_SECONDS / ERROR_FLASH_FREQUENCY / 2
+            err_next_trigger_time = time.time() + hold_duration_seconds
             code = lp.LedGetColorByName("red")
             lp.LedAllOn(code)
             on = True
-            while not time.get_ticks() >= err_end_ticks:
-                if time.get_ticks() >= err_next_ticks:
+            while time.time() < err_end_time:
+                if time.time() >= err_next_trigger_time:
                     if on:
                         lp.LedAllOn(0)
                     else:
                         lp.LedAllOn(code)
                     on = not on
-                    err_next_ticks += hold_duration_ms
-                time.wait(10)
+                    err_next_trigger_time += hold_duration_seconds
+                time.sleep(.01)
             set_launchpad_wave(mode="rgb")
 except KeyboardInterrupt:
     pass
