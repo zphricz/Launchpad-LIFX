@@ -9,10 +9,11 @@ from lifxlan import LifxLAN
 import launchpad_py as launchpad
 import time
 
-WARM_TEMP = 3500
-WARM_COLOR = [0, 0, 65535, WARM_TEMP]
 NUM_LIGHTS = 3
 RATE = 0.1
+MIN_WHITE_TEMP = 2500
+MAX_WHITE_TEMP = 9000
+WHITE_TEMP_DELTA = (MAX_WHITE_TEMP - MIN_WHITE_TEMP) / 10
 LOOP_DURATION_SECONDS = 0.1
 ERROR_FLASH_DURATION_SECONDS = 3
 ERROR_FLASH_FREQUENCY = 6.0
@@ -39,15 +40,23 @@ else:
     sys.exit(1)
 lp.ButtonFlush()
 
-original_colors = lifx.get_color_all_lights()
-original_powers = lifx.get_power_all_lights()
+#original_colors = lifx.get_color_all_lights()
+#original_powers = lifx.get_power_all_lights()
 
-are_lights_all_on = True
-for light, power in lifx.get_power_all_lights().items():
-    if power == 0:
-        are_lights_all_on = False
+def detect_lights_on():
+    for light, power in lifx.get_power_all_lights().items():
+        if power == 0:
+            return False
+    return True
 
+are_lights_all_on = detect_lights_on()
+
+last_button_glow = None
 def set_button_glow(v):
+    global last_button_glow
+    if v == last_button_glow:
+        return
+    last_button_glow = v
     lp.LedCtrlXY(0, 0, v, v, v)
     lp.LedCtrlXY(4, 0, v, v, v)
     lp.LedCtrlXY(5, 0, v, v, v)
@@ -55,6 +64,8 @@ def set_button_glow(v):
     lp.LedCtrlXY(8, 2, v, v, v)
     lp.LedCtrlXY(8, 3, v, v, v)
     lp.LedCtrlXY(8, 4, v, v, v)
+    lp.LedCtrlXY(8, 5, v, v, v)
+    lp.LedCtrlXY(8, 6, v, v, v)
 
 
 def shutdown(channel):
@@ -136,23 +147,27 @@ def set_launchpad_wave(mode, wait_ms=15):
 
 saturation = 1.0
 brightness = 1.0
+white_temp = 3800
 
 lp.Reset()
 build_rgbs_and_hsvs(saturation=saturation, brightness=brightness)
-set_launchpad_wave(mode="rgb")
-are_launchpad_lights_on = True
+#set_launchpad_wave(mode="rgb")
+#are_launchpad_lights_on = True
+are_launchpad_lights_on = False
 last_color_xy = None
 last_hold_down_button_pressed = None
 lifx_is_rgb = False
 
-if are_lights_all_on:
-    set_button_glow(63)
-else:
-    set_button_glow(1)
-
 next_trigger_time = time.time()
 try:
     while True:
+        #are_lights_all_on = detect_lights_on()
+        #if are_lights_all_on:
+        #    print("ON")
+        #    set_button_glow(max(1, int(round(63 * brightness ** 2))))
+        #else:
+        #    print("OFF")
+        #    set_button_glow(1)
         try:
             next_trigger_time += LOOP_DURATION_SECONDS
             while True:
@@ -176,9 +191,9 @@ try:
                         continue
                     elif (x, y) == (5, 0):
                         print("set lights warm")
-                        lifx.set_color_all_lights(WARM_COLOR, duration=0, rapid=True)
+                        lifx.set_color_all_lights([0, 0, map_to_base(brightness, 65536), white_temp], duration=0, rapid=True)
                         lifx_is_rgb = False
-                    elif (x, y) in {(8, 1), (8, 2), (8, 3), (8, 4)}:
+                    elif (x, y) in {(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6)}:
                         last_hold_down_button_pressed = (x, y)
                     elif (x, y) == (0, 0):
                         if are_launchpad_lights_on:
@@ -195,7 +210,7 @@ try:
                     r, g, b = rgbs[(x, y)]
                     print("(h, s, v) = ({}, {}, {})".format(h, s, b))
                     print("(r, g, b) = ({}, {}, {})".format(r, g, b))
-                    lifx.set_color_all_lights([h, s, v, WARM_TEMP], duration=0, rapid=True)
+                    lifx.set_color_all_lights([h, s, v, white_temp], duration=0, rapid=True)
                     last_color_xy = (x, y)
                     lifx_is_rgb = True
             if last_hold_down_button_pressed is not None:
@@ -211,6 +226,12 @@ try:
                 elif last_hold_down_button_pressed == (8, 4):
                     brightness = decrement_val(brightness)
                     print("decrement brightness")
+                elif last_hold_down_button_pressed == (8, 5):
+                    white_temp = min(white_temp + WHITE_TEMP_DELTA, MAX_WHITE_TEMP)
+                    print("increase color temperature to {}k".format(white_temp))
+                elif last_hold_down_button_pressed == (8, 6):
+                    white_temp = max(white_temp - WHITE_TEMP_DELTA, MIN_WHITE_TEMP)
+                    print("decrease color temperature to {}k".format(white_temp))
                 build_rgbs_and_hsvs(saturation=saturation, brightness=brightness)
                 if are_launchpad_lights_on:
                     set_launchpad_wave(mode="rgb", wait_ms=0)
@@ -219,7 +240,9 @@ try:
                     r, g, b = rgbs[last_color_xy]
                     print("(h, s, v) = ({}, {}, {})".format(h, s, b))
                     print("(r, g, b) = ({}, {}, {})".format(r, g, b))
-                    lifx.set_color_all_lights([h, s, v, WARM_TEMP], duration=100, rapid=True)
+                else:
+                    h, s, v = (0, 0, map_to_base(brightness, 65535))
+                lifx.set_color_all_lights([h, s, v, white_temp], duration=100, rapid=True)
             current_time = time.time()
             sleep_duration = next_trigger_time - current_time
             if sleep_duration > 0:
