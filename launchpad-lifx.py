@@ -10,10 +10,11 @@ import launchpad_py as launchpad
 import time
 
 NUM_LIGHTS = 3
-RATE = 0.1
+STEPS_PER_INCREMENTAL_VALUE = 20
+INCREMENTAL_STEP = 1 / STEPS_PER_INCREMENTAL_VALUE
 MIN_WHITE_TEMP = 2500
 MAX_WHITE_TEMP = 9000
-WHITE_TEMP_DELTA = (MAX_WHITE_TEMP - MIN_WHITE_TEMP) / 10
+WHITE_TEMP_DELTA = (MAX_WHITE_TEMP - MIN_WHITE_TEMP) * INCREMENTAL_STEP
 LOOP_DURATION_SECONDS = 0.1
 ERROR_FLASH_DURATION_SECONDS = 3
 ERROR_FLASH_FREQUENCY = 6.0
@@ -84,10 +85,10 @@ def toggle_lights():
     are_lights_all_on = not are_lights_all_on
 
 def increment_val(val):
-    return min(val + RATE, 1.0)
+    return min(val + INCREMENTAL_STEP, 1.0)
 
 def decrement_val(val):
-    return max(val - RATE, 0.0)
+    return max(val - INCREMENTAL_STEP, 0.0)
 
 
 def map_to_base(val, base):
@@ -190,7 +191,7 @@ try:
                         toggle_lights()
                         continue
                     elif (x, y) == (5, 0):
-                        print("set lights warm")
+                        print("set lights white")
                         lifx.set_color_all_lights([0, 0, map_to_base(brightness, 65536), white_temp], duration=0, rapid=True)
                         lifx_is_rgb = False
                     elif (x, y) in {(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6)}:
